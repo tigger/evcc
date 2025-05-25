@@ -101,6 +101,8 @@ func (wb *EProWallbox) heartbeat(ctx context.Context) {
 
 // Status implements the api.Charger interface
 func (wb *EProWallbox) Status() (api.ChargeStatus, error) {
+	wb.DiagnosticTrace(fmt.Sprintf("Status()"))
+
 	b, err := wb.conn.ReadHoldingRegisters(eproRegStatus, 1)
 	if err != nil {
 		return api.StatusNone, err
@@ -122,6 +124,8 @@ func (wb *EProWallbox) Status() (api.ChargeStatus, error) {
 
 // Enabled implements the api.Charger interface
 func (wb *EProWallbox) Enabled() (bool, error) {
+	wb.DiagnosticTrace("Enabled()")
+
 	b, err := wb.conn.ReadHoldingRegisters(eproRegEnable, 1)
 	if err != nil {
 		return false, err
@@ -132,6 +136,7 @@ func (wb *EProWallbox) Enabled() (bool, error) {
 
 // Enable implements the api.Charger interface
 func (wb *EProWallbox) Enable(enable bool) error {
+	wb.DiagnosticTrace(fmt.Sprintf("Enable(%t)", enable))
 	b := make([]byte, 2)
 	if enable {
 		binary.BigEndian.PutUint16(b, 1)
@@ -144,6 +149,7 @@ func (wb *EProWallbox) Enable(enable bool) error {
 
 // MaxCurrent implements the api.Charger interface
 func (wb *EProWallbox) MaxCurrent(current int64) error {
+	wb.DiagnosticTrace(fmt.Sprintf("MaxCurrent(%d)", current))
 	return wb.MaxCurrentMillis(float64(current))
 }
 
@@ -151,6 +157,7 @@ var _ api.ChargerEx = (*EProWallbox)(nil)
 
 // MaxCurrent implements the api.ChargerEx interface
 func (wb *EProWallbox) MaxCurrentMillis(current float64) error {
+	wb.DiagnosticTrace(fmt.Sprintf("MaxCurrentMillis(%f)", current))
 	if current < 6 {
 		return fmt.Errorf("invalid current %.5g", current)
 	}
@@ -206,4 +213,47 @@ var _ api.PhaseVoltages = (*EProWallbox)(nil)
 // Voltages implements the api.PhaseVoltages interface
 func (wb *EProWallbox) Voltages() (float64, float64, float64, error) {
 	return wb.getPhaseValues(eproRegVoltages, 1)
+}
+
+// use description from modbus communication map pdf from Free2Move
+var decoderOcppStatus = map[uint16]string{
+	0: "Available (A)", 1: "Preparing (B)", 2: "Charging (C)",
+	3: "SuspendedEV (D)", 4: "SuspendedEVSE (E)", 5: "Finishing (F)",
+	6: "Reserved (G)", 7: "Unavailable (H)", 8: "Faulted (I)",
+}
+
+var decoderGeneralStatus = map[uint16]string{
+	0: "A1", 1: "A2", 2: "B1", 3: "B2", 4: "C1", 5: "C2", 6: "D1", 7: "D2", 8: "E", 9: "F",
+}
+
+func (wb *EProWallbox) DiagnosticTrace(functionName string) {
+
+	readUint16 := func(address uint16) uint16 {
+		b, _ := wb.conn.ReadHoldingRegisters(address, 1)
+		return binary.BigEndian.Uint16(b)
+	}
+
+	readUint32 := func(address uint16) uint32 {
+		b, _ := wb.conn.ReadHoldingRegisters(address, 2)
+		return binary.BigEndian.Uint32(b)
+	}
+
+	decode := func(m map[uint16]string, value uint16) string {
+		if decoded, ok := m[value]; ok {
+			return decoded
+		}
+		return fmt.Sprintf("Unknown (%d)", value)
+	}
+
+	ocpp := decode(decoderOcppStatus, readUint16(40102))
+	status := decode(decoderGeneralStatus, readUint16(40101))
+	errorCode := readUint16(40100)
+	limit := readUint32(40407)
+	I1, I2, I3, _ := wb.Currents()
+	V1, V2, V3, _ := wb.Voltages()
+	onoff := readUint16(40406)
+	chargetime := readUint32(40600)
+
+	wb.log.DEBUG.Printf("OCPP: %10s | Status: %s | Error: %d | Limit: %5d mA | I1: %2.1f A | I2: %2.1f A | I3: %2.1f A | V1: %2.1f V | V2: %2.1f V | V3: %2.1f V |  On/Off: %d | Charge Time: %4d s | %s",
+		ocpp, status, errorCode, limit, I1/10, I2/10, I3/10, V1, V2, V3, onoff, chargetime, functionName)
 }
