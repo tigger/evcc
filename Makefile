@@ -123,7 +123,7 @@ release::
 
 docker::
 	@echo Version: $(VERSION) $(SHA)
-	docker buildx build --platform $(PLATFORM) --tag $(DOCKER_IMAGE):$(DOCKER_TAG) --push .
+	docker buildx build --platform $(PLATFORM) --tag $(DOCKER_IMAGE):$(DOCKER_TAG) --load .
 
 publish-nightly::
 	@echo Version: $(VERSION) $(SHA)

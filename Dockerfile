@@ -60,11 +60,11 @@ COPY --from=node /build/dist /build/dist
 ARG TARGETOS
 ARG TARGETARCH
 ARG TARGETVARIANT
-ARG GOARM=${TARGETVARIANT#v}
+#ARG GOARM=${TARGETVARIANT#v}
 
-RUN --mount=type=cache,target=${GOCACHE} --mount=type=cache,target=${GOMODCACHE} \
-    RELEASE=${RELEASE} GOOS=${TARGETOS} GOARCH=${TARGETARCH} GOARM=${GOARM} make build
-
+#RUN --mount=type=cache,target=${GOCACHE} --mount=type=cache,target=${GOMODCACHE} \
+#    RELEASE=${RELEASE} GOOS=${TARGETOS} GOARCH=${TARGETARCH} GOARM=${GOARM} make build
+RUN RELEASE=${RELEASE} GOOS=${TARGETOS} GOARCH=${TARGETARCH}  make build
 
 # STEP 3 build a small image including module support
 FROM alpine:3.23@sha256:5b10f432ef3da1b8d4c7eb6c487f2f5a8f096bc91145e68878dd4a5019afde11
