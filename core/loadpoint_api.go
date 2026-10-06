@@ -218,6 +218,20 @@ func (lp *Loadpoint) GetAlwaysCharge() api.AlwaysCharge {
 	return lp.alwaysCharge
 }
 
+// SetMeterFailure sets the degradation level for unavailable site meters
+func (lp *Loadpoint) SetMeterFailure(m MeterFailure) {
+	lp.Lock()
+	defer lp.Unlock()
+	lp.meterFailure = m
+}
+
+// GetMeterFailure returns the degradation level for unavailable site meters
+func (lp *Loadpoint) GetMeterFailure() MeterFailure {
+	lp.RLock()
+	defer lp.RUnlock()
+	return lp.meterFailure
+}
+
 // setAlwaysCharge sets the always charge state (no mutex)
 func (lp *Loadpoint) setAlwaysCharge(ac api.AlwaysCharge) {
 	if lp.alwaysCharge == ac {

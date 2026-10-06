@@ -48,6 +48,7 @@ const standbyPower = 10 // consider less than 10W as charger in standby
 type updater interface {
 	loadpoint.API
 	Update(sitePower, batteryPower float64, consumption, feedin api.Rates, batteryBuffered, batteryStart bool, greenShare float64, effectivePrice, effectiveCo2 *float64, dim *bool)
+	SetMeterFailure(MeterFailure)
 }
 
 var _ site.API = (*Site)(nil)
@@ -62,11 +63,12 @@ type Site struct {
 	log *util.Logger
 
 	// configuration
-	Title         string       `mapstructure:"title"`         // UI title
-	Voltage       float64      `mapstructure:"voltage"`       // Operating voltage. 230V for Germany.
-	ResidualPower float64      `mapstructure:"residualPower"` // PV meter only: household usage. Grid meter: household safety margin
-	Meters        MetersConfig `mapstructure:"meters"`        // Meter references
-	CurtailersRef []string     `mapstructure:"curtailers"`    // Curtailment device references
+	Title         string        `mapstructure:"title"`         // UI title
+	Voltage       float64       `mapstructure:"voltage"`       // Operating voltage. 230V for Germany.
+	ResidualPower float64       `mapstructure:"residualPower"` // PV meter only: household usage. Grid meter: household safety margin
+	Meters        MetersConfig  `mapstructure:"meters"`        // Meter references
+	CurtailersRef []string      `mapstructure:"curtailers"`    // Curtailment device references
+	MeterFailsafe time.Duration `mapstructure:"meterFailsafe"` // Grid meter outage duration after which loadpoints charge with at least min current, 0 = hold forever
 
 	// meters
 	circuit        api.Circuit                // Circuit
@@ -124,6 +126,9 @@ type Site struct {
 
 	optimizerMu      sync.Mutex // guards optimizer runs
 	optimizerUpdated time.Time  // last optimizer run, guarded by optimizerMu
+
+	meterFailedSince time.Time    // start of the current meter outage, only accessed from the control loop
+	meterFailure     MeterFailure // last applied meter degradation level, only accessed from the control loop
 
 	solarScaleCached func() (float64, error) // util.Cached wrapper around querySolarScale
 }
@@ -398,9 +403,10 @@ func (site *Site) Boot(log *util.Logger, loadpoints []*Loadpoint, tariffs *tarif
 // NewSite creates a Site with sane defaults
 func NewSite() *Site {
 	site := &Site{
-		log:        util.NewLogger("site"),
-		Voltage:    230, // V
-		collectors: make(map[string]*metrics.Collector),
+		log:           util.NewLogger("site"),
+		Voltage:       230, // V
+		MeterFailsafe: defaultMeterFailsafe,
+		collectors:    make(map[string]*metrics.Collector),
 	}
 
 	// the result only depends on completed days, so it cannot change within a day
@@ -1262,8 +1268,20 @@ func (site *Site) update(lp updater) {
 	site.updateCircuits()
 	site.applyHemsLimits()
 
-	if state, err := site.updateMeters(); err != nil {
+	state, err := site.updateMeters()
+	failure := site.trackMeterFailure(err != nil)
+	if lp != nil {
+		lp.SetMeterFailure(failure)
+	}
+
+	if err != nil {
 		site.log.ERROR.Println(err)
+
+		// keep loadpoints running without site power: status, vehicle detection and
+		// non-surplus strategies continue, surplus charging holds or falls back to min current
+		if lp != nil {
+			lp.Update(0, 0, consumption, feedin, false, false, 0, nil, nil, hems.Dimmed(site.hems))
+		}
 	} else {
 		if sponsor.IsAuthorized() && optimizerEnabled() {
 			site.reapplySuggestions(time.Now())

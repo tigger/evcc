@@ -196,6 +196,10 @@
         "residualPower": {
           "type": "number"
         },
+        "meterFailsafe": {
+          "type": "string",
+          "description": "Grid meter outage duration after which loadpoints charge with at least min current. Default 10m, 0 holds the charger state indefinitely"
+        },
         "maxGridSupplyWhileBatteryCharging": {
           "type": "number"
         }

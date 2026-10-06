@@ -130,6 +130,7 @@ type Loadpoint struct {
 
 	mode                api.ChargeMode
 	alwaysCharge        api.AlwaysCharge // smart mode: charge continuously at least at min power
+	meterFailure        MeterFailure     // site meter degradation level, guarded by mutex
 	enabled             bool             // Charger enabled state
 	phases              int              // Charger enabled phases, guarded by mutex
 	measuredPhases      int              // Charger physically measured phases
@@ -1810,7 +1811,7 @@ func (lp *Loadpoint) pvMaxCurrent(sitePower, batteryPower float64, batteryBuffer
 	// read only once to simplify testing
 	minCurrent := lp.effectiveMinCurrent()
 	maxCurrent := lp.effectiveMaxCurrent()
-	alwaysCharge := lp.GetAlwaysCharge().Active()
+	alwaysCharge := lp.GetAlwaysCharge().Active() || lp.GetMeterFailure() == MeterFailsafe
 
 	// always charge and the battery conditions hold charging at min current, no disable can follow
 	battery := lp.GetBatteryBoost() == boostContinue || lp.batterySupported(sitePower, batteryPower, batteryBuffered, batteryStart)
@@ -2517,6 +2518,12 @@ NO_DIM:
 
 			lp.resetPhaseTimer()
 			lp.elapsePVTimer() // let PV mode disable immediately afterwards
+			break
+		}
+
+		// meters unavailable, surplus is unknown: keep the charger as is
+		if lp.GetMeterFailure() == MeterHold {
+			lp.log.DEBUG.Println("meter unavailable, holding charger state")
 			break
 		}
 
