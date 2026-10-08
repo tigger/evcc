@@ -347,8 +347,14 @@ func TestPVHysteresis(t *testing.T) {
 				lp.enabled = tc.enabled
 				current := lp.pvMaxCurrent(se.site, 0, false, false)
 
-				if current != se.current {
-					t.Errorf("step %d: wanted %.1f, got %.1f", step, se.current, current)
+				expected := se.current
+				// StatusB: immediate disable without timer when threshold is met
+				if status != api.StatusC && tc.enabled && tc.disable > 0 && se.site >= tc.disable {
+					expected = 0
+				}
+
+				if current != expected {
+					t.Errorf("step %d: wanted %.1f, got %.1f", step, expected, current)
 				}
 			}
 
@@ -1173,9 +1179,13 @@ func TestPVDisableContinuousDeviceShortfall(t *testing.T) {
 				clock.Set(start.Add(delay))
 				current := lp.pvMaxCurrent(tc.site, 0, false, false)
 
-				// before the disable delay elapses the device keeps running
+				// before the disable delay elapses a charging device keeps running, a non-charging one is disabled directly
 				if delay == 0 {
-					assert.Equal(t, max(tc.current, minA), current, "before disable delay")
+					expected := max(tc.current, minA)
+					if tc.status != api.StatusC && tc.current == 0 {
+						expected = 0
+					}
+					assert.Equal(t, expected, current, "before disable delay")
 					continue
 				}
 
