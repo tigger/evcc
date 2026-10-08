@@ -106,7 +106,7 @@ site:
     aux:
       - aux # list of auxiliary meters for adjusting grid operating point
   residualPower: 0 # additional household usage margin
-  # meterFailsafe: 10m # grid meter outage duration after which loadpoints charge with at least min current (0: hold charger state)
+  # meterFailsafe: 10m # grid meter outage duration after which vehicle loadpoints charge with at least min current and heating loadpoints pause (0: hold charger state)
 
 # loadpoint describes the charger, charge meter and connected vehicle
 loadpoints:

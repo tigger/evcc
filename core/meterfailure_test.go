@@ -4,12 +4,68 @@ import (
 	"testing"
 	"time"
 
+	evbus "github.com/asaskevich/EventBus"
 	"github.com/benbjohnson/clock"
 	"github.com/evcc-io/evcc/api"
 	"github.com/evcc-io/evcc/core/loadpoint"
 	"github.com/evcc-io/evcc/util"
 	"github.com/stretchr/testify/assert"
+	"go.uber.org/mock/gomock"
 )
+
+func TestUpdateMeterFailureHeating(t *testing.T) {
+	tc := []struct {
+		name    string
+		failure MeterFailure
+		expect  func(h *api.MockCharger)
+	}{
+		{"hold keeps state", MeterHold, func(h *api.MockCharger) {}},
+		{"failsafe pauses heating", MeterFailsafe, func(h *api.MockCharger) {
+			h.EXPECT().Enable(false)
+		}},
+	}
+
+	for _, tc := range tc {
+		t.Run(tc.name, func(t *testing.T) {
+			Voltage = 230
+
+			ctrl := gomock.NewController(t)
+			cc := api.NewMockCharger(ctrl)
+			fd := api.NewMockFeatureDescriber(ctrl)
+			fd.EXPECT().Features().AnyTimes().Return([]api.Feature{api.Heating})
+
+			lp := &Loadpoint{
+				log:   util.NewLogger("foo"),
+				bus:   evbus.New(),
+				clock: clock.NewMock(),
+				charger: struct {
+					api.Charger
+					api.FeatureDescriber
+				}{cc, fd},
+				chargeMeter: newChargeMeter(&Null{}),
+				chargeRater: &Null{},
+				chargeTimer: &Null{},
+				wakeUpTimer: NewTimer(),
+				minCurrent:  minA,
+				maxCurrent:  maxA,
+				phases:      1,
+				solarShare:  1,
+				status:      api.StatusC,
+				enabled:     true,
+				mode:        api.ModeSmart,
+			}
+			cc.EXPECT().Enabled().AnyTimes().Return(true, nil)
+			cc.EXPECT().MaxCurrent(int64(minA)).Return(nil) // initial state read
+			attachListeners(t, lp)
+
+			cc.EXPECT().Status().Return(api.StatusC, nil)
+			tc.expect(cc)
+
+			lp.SetMeterFailure(tc.failure)
+			lp.Update(0, 0, nil, nil, false, false, 0, nil, nil, nil)
+		})
+	}
+}
 
 func TestTrackMeterFailure(t *testing.T) {
 	site := &Site{log: util.NewLogger("foo"), MeterFailsafe: time.Minute}

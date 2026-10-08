@@ -2522,8 +2522,16 @@ NO_DIM:
 		}
 
 		// meters unavailable, surplus is unknown: keep the charger as is
-		if lp.GetMeterFailure() == MeterHold {
+		failure := lp.GetMeterFailure()
+		if failure == MeterHold {
 			lp.log.DEBUG.Println("meter unavailable, holding charger state")
+			break
+		}
+
+		// heating only serves surplus use, there is no purpose in charging without surplus data
+		if failure == MeterFailsafe && lp.chargerHasFeature(api.Heating) {
+			lp.log.DEBUG.Println("meter unavailable, pausing heating")
+			err = lp.setLimit(0)
 			break
 		}
 

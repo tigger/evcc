@@ -198,7 +198,7 @@
         },
         "meterFailsafe": {
           "type": "string",
-          "description": "Grid meter outage duration after which loadpoints charge with at least min current. Default 10m, 0 holds the charger state indefinitely"
+          "description": "Grid meter outage duration after which vehicle loadpoints charge with at least min current and heating loadpoints pause. Default 10m, 0 holds the charger state indefinitely"
         },
         "maxGridSupplyWhileBatteryCharging": {
           "type": "number"
