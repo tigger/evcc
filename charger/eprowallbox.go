@@ -21,18 +21,24 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/evcc-io/evcc/api"
 	"github.com/evcc-io/evcc/util"
+	"github.com/evcc-io/evcc/util/logstash"
 	"github.com/evcc-io/evcc/util/modbus"
+	jww "github.com/spf13/jwalterweatherman"
 	"github.com/volkszaehler/mbmd/meters/rs485"
 )
 
 // eSolutions eProWallbox charger implementation
 type EProWallbox struct {
-	conn *modbus.Connection
-	log  *util.Logger
+	conn       *modbus.Connection
+	cache      *eproCache
+	log        *util.Logger
+	lastStatus uint16
 }
 
 const (
@@ -44,6 +50,16 @@ const (
 	eproRegCurrents       = 40620 // L1 current in A, 2 registers, Float32 (followed by L2, L3)
 	eproRegPowers         = 40636 // L1 power in W, 2 registers, Float32 (followed by L2, L3)
 	eproRegActiveEnergies = 40658 // L1 energy in Wh, 2 registers, Float32 (followed by L2, L3)
+
+	eproRegBlockStatus = 40100 // 40100..40108: error, status, ocpp status, limits, derating
+	eproRegBlockMeter  = 40600 // 40600..40663: charge time, voltages, currents, powers, energies
+
+	// eproCacheTTL bounds the age of status and meter blocks, which only deduplicates reads within one control cycle
+	eproCacheTTL = 2 * time.Second
+
+	// eproConfigCacheTTL bounds the age of the enable/limit block, which is kept current by writes.
+	// The refresh still detects state changes made by the device itself.
+	eproConfigCacheTTL = 60 * time.Second
 )
 
 func init() {
@@ -76,7 +92,15 @@ func NewEProWallbox(ctx context.Context, settings modbus.Settings) (api.Charger,
 	wb := &EProWallbox{
 		conn: conn,
 		log:  log,
+		// status, enable/limit/watchdog and meter registers are each fetched with a single request
+		cache: newEProCache(conn, log, eproCacheTTL,
+			[2]uint16{eproRegBlockStatus, 9},
+			[2]uint16{eproRegEnable, 8},
+			[2]uint16{eproRegBlockMeter, 64},
+		),
 	}
+	wb.cache.onFetch = wb.logBlock
+	wb.cache.setTTL(eproRegEnable, eproConfigCacheTTL)
 
 	go wb.heartbeat(ctx)
 
@@ -101,12 +125,18 @@ func (wb *EProWallbox) heartbeat(ctx context.Context) {
 
 // Status implements the api.Charger interface
 func (wb *EProWallbox) Status() (api.ChargeStatus, error) {
-	b, err := wb.conn.ReadHoldingRegisters(eproRegStatus, 1)
+	b, err := wb.cache.read(eproRegStatus, 1)
 	if err != nil {
 		return api.StatusNone, err
 	}
 
 	s := binary.BigEndian.Uint16(b)
+
+	if s != wb.lastStatus {
+		wb.log.DEBUG.Printf("status transition: %s -> %s",
+			decoderGeneralStatus[wb.lastStatus], decoderGeneralStatus[s])
+		wb.lastStatus = s
+	}
 
 	switch s {
 	case 0, 1: // A1, A2
@@ -122,7 +152,7 @@ func (wb *EProWallbox) Status() (api.ChargeStatus, error) {
 
 // Enabled implements the api.Charger interface
 func (wb *EProWallbox) Enabled() (bool, error) {
-	b, err := wb.conn.ReadHoldingRegisters(eproRegEnable, 1)
+	b, err := wb.cache.read(eproRegEnable, 1)
 	if err != nil {
 		return false, err
 	}
@@ -137,9 +167,7 @@ func (wb *EProWallbox) Enable(enable bool) error {
 		binary.BigEndian.PutUint16(b, 1)
 	}
 
-	_, err := wb.conn.WriteMultipleRegisters(eproRegEnable, 1, b)
-
-	return err
+	return wb.write(eproRegEnable, 1, b)
 }
 
 // MaxCurrent implements the api.Charger interface
@@ -158,14 +186,23 @@ func (wb *EProWallbox) MaxCurrentMillis(current float64) error {
 	b := make([]byte, 4)
 	binary.BigEndian.PutUint32(b, uint32(current*1e3))
 
-	_, err := wb.conn.WriteMultipleRegisters(eproRegCurrentLimit, 2, b)
+	return wb.write(eproRegCurrentLimit, 2, b)
+}
 
-	return err
+// write writes registers and keeps the cache in sync
+func (wb *EProWallbox) write(address, quantity uint16, b []byte) error {
+	if _, err := wb.conn.WriteMultipleRegisters(address, quantity, b); err != nil {
+		wb.cache.invalidate()
+		return err
+	}
+
+	wb.cache.write(address, b)
+	return nil
 }
 
 // getPhaseValues returns 3 sequential register values
 func (wb *EProWallbox) getPhaseValues(reg uint16, divider float64) (float64, float64, float64, error) {
-	b, err := wb.conn.ReadHoldingRegisters(reg, 6)
+	b, err := wb.cache.read(reg, 6)
 	if err != nil {
 		return 0, 0, 0, err
 	}
@@ -217,5 +254,80 @@ func (wb *EProWallbox) WakeUp() error {
 		return err
 	}
 	time.Sleep(3 * time.Second)
-	return wb.Enable(true)
+
+	// refill the cache to log the state during the CP interrupt
+	_, _ = wb.cache.read(eproRegStatus, 1)
+
+	err := wb.Enable(true)
+
+	// temporary diagnostic: dump log buffer to file 90s after wakeup
+	go wb.dumpDiagnosticLog()
+
+	return err
+}
+
+// dumpDiagnosticLog waits 90s then writes the ring buffer to a timestamped file.
+// Temporary diagnostic - remove once SuspendedEV behavior is confirmed resolved.
+func (wb *EProWallbox) dumpDiagnosticLog() {
+	time.Sleep(90 * time.Second)
+
+	lines := logstash.All(nil, jww.LevelTrace, 0)
+	if len(lines) == 0 {
+		return
+	}
+
+	filename := fmt.Sprintf("eprowallbox-wakeup-%s.log", time.Now().Format("20060102-150405"))
+	if err := os.WriteFile(filename, []byte(strings.Join(lines, "")), 0o644); err != nil {
+		wb.log.ERROR.Printf("diagnostic log dump failed: %v", err)
+	} else {
+		wb.log.WARN.Printf("diagnostic log saved: %s", filename)
+	}
+}
+
+// use description from modbus communication map pdf from Free2Move
+var decoderOcppStatus = map[uint16]string{
+	0: "Available (A)", 1: "Preparing (B)", 2: "Charging (C)",
+	3: "SuspendedEV (D)", 4: "SuspendedEVSE (E)", 5: "Finishing (F)",
+	6: "Reserved (G)", 7: "Unavailable (H)", 8: "Faulted (I)",
+}
+
+var decoderGeneralStatus = map[uint16]string{
+	0: "A1", 1: "A2", 2: "B1", 3: "B2", 4: "C1", 5: "C2", 6: "D1", 7: "D2", 8: "E", 9: "F",
+}
+
+// logBlock logs the decoded registers of a freshly fetched block
+func (wb *EProWallbox) logBlock(start uint16, b []byte) {
+	u16 := func(address uint16) uint16 {
+		return binary.BigEndian.Uint16(b[2*(address-start):])
+	}
+	u32 := func(address uint16) uint32 {
+		return binary.BigEndian.Uint32(b[2*(address-start):])
+	}
+	decode := func(m map[uint16]string, value uint16) string {
+		if decoded, ok := m[value]; ok {
+			return decoded
+		}
+		return fmt.Sprintf("Unknown (%d)", value)
+	}
+
+	switch start {
+	case eproRegBlockStatus:
+		wb.log.DEBUG.Printf("OCPP: %s | Status: %s | Error: %d | UserLimit: %d mA | UB: %d | DPM: %d | TempDerate: %d",
+			decode(decoderOcppStatus, u16(40102)), decode(decoderGeneralStatus, u16(40101)), u16(40100),
+			u32(40103), u16(40106), u16(40107), u16(40108))
+
+	case eproRegEnable:
+		wb.log.DEBUG.Printf("On/Off: %d | Limit: %d mA | WD: %d/%d s",
+			u16(eproRegEnable), u32(eproRegCurrentLimit), u16(40412), u16(40413))
+
+	case eproRegBlockMeter:
+		wb.log.DEBUG.Printf("Charge Time: %d s | I: %.1f/%.1f/%.1f A | V: %.1f/%.1f/%.1f V",
+			u32(40600),
+			rs485.RTUIeee754ToFloat64(b[2*(eproRegCurrents-start):]),
+			rs485.RTUIeee754ToFloat64(b[2*(eproRegCurrents+2-start):]),
+			rs485.RTUIeee754ToFloat64(b[2*(eproRegCurrents+4-start):]),
+			rs485.RTUIeee754ToFloat64(b[2*(eproRegVoltages-start):]),
+			rs485.RTUIeee754ToFloat64(b[2*(eproRegVoltages+2-start):]),
+			rs485.RTUIeee754ToFloat64(b[2*(eproRegVoltages+4-start):]))
+	}
 }
