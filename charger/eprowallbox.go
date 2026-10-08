@@ -207,3 +207,15 @@ var _ api.PhaseVoltages = (*EProWallbox)(nil)
 func (wb *EProWallbox) Voltages() (float64, float64, float64, error) {
 	return wb.getPhaseValues(eproRegVoltages, 1)
 }
+
+var _ api.Resurrector = (*EProWallbox)(nil)
+
+// WakeUp implements the api.Resurrector interface
+func (wb *EProWallbox) WakeUp() error {
+	wb.log.WARN.Println("WakeUp() triggered - vehicle in SuspendedEV, performing CP interrupt")
+	if err := wb.Enable(false); err != nil {
+		return err
+	}
+	time.Sleep(3 * time.Second)
+	return wb.Enable(true)
+}
