@@ -50,7 +50,7 @@ render: |
     jq: .timed_odometer.mileage
   climater:
     {{- include "source" . | indent 2 }}
-    jq: (.preconditionning.air_conditioning.status // "Disabled") != "Disabled"
+    jq: (.preconditionning.air_conditioning.status // "") == "Enabled"
   wakeup:
     source: http
     {{- if .host }}
