@@ -117,6 +117,7 @@ loadpoints:
 
     # remaining settings are experts-only and best left at default values
     priority: 0 # relative priority for concurrent charging in smart mode with multiple loadpoints (higher values have higher priority)
+    # onMeterFailure: pause # behavior after the meterFailsafe timeout: charge (at least min current), pause or hold (default: pause for heating, charge otherwise)
     soc:
       # polling defines usage of the vehicle APIs
       # Modifying the default settings it NOT recommended. It MAY deplete your vehicle's battery

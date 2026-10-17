@@ -1,6 +1,9 @@
 package core
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // defaultMeterFailsafe is the time the site holds the charger state while the grid meter is unavailable
 const defaultMeterFailsafe = 10 * time.Minute
@@ -16,6 +19,30 @@ const (
 	// MeterFailsafe charges at least with minimum current like always charge
 	MeterFailsafe
 )
+
+// MeterFailsafeAction is the loadpoint behavior once the meter failsafe timeout has elapsed
+type MeterFailsafeAction string
+
+const (
+	// MeterFailsafeAuto pauses heating and charges everything else with at least min current
+	MeterFailsafeAuto MeterFailsafeAction = ""
+	// MeterFailsafeCharge charges with at least min current
+	MeterFailsafeCharge MeterFailsafeAction = "charge"
+	// MeterFailsafePause disables the charger
+	MeterFailsafePause MeterFailsafeAction = "pause"
+	// MeterFailsafeHold keeps the charger state unchanged
+	MeterFailsafeHold MeterFailsafeAction = "hold"
+)
+
+// validate checks the configured action
+func (a MeterFailsafeAction) validate() error {
+	switch a {
+	case MeterFailsafeAuto, MeterFailsafeCharge, MeterFailsafePause, MeterFailsafeHold:
+		return nil
+	default:
+		return fmt.Errorf("invalid onMeterFailure: %q (charge, pause, hold)", string(a))
+	}
+}
 
 func (m MeterFailure) String() string {
 	switch m {

@@ -108,6 +108,8 @@ type Loadpoint struct {
 	Title       string         `mapstructure:"title"`    // UI title
 	Priority    int            `mapstructure:"priority"` // Priority
 
+	OnMeterFailure MeterFailsafeAction `mapstructure:"onMeterFailure"` // Behavior after the meter failsafe timeout
+
 	// from yaml, deprecated
 	GuardDuration_ time.Duration `mapstructure:"guardduration"` // ignored, present for compatibility
 	Phases_        int           `mapstructure:"phases"`        // ignored, present for compatibility
@@ -216,6 +218,10 @@ func NewLoadpointFromConfig(log *util.Logger, settings settings.Settings, collec
 		lp.log.WARN.Printf("PV mode enable threshold (%.0fW) is larger than disable threshold (%.0fW)", lp.Enable.Threshold, lp.Disable.Threshold)
 	} else if lp.Enable.Threshold > 0 {
 		lp.log.WARN.Printf("PV mode enable threshold %.0fW > 0 will start PV charging on grid power consumption. Did you mean -%.0f?", lp.Enable.Threshold, lp.Enable.Threshold)
+	}
+
+	if err := lp.OnMeterFailure.validate(); err != nil {
+		return lp, err
 	}
 
 	// choose sane default if mode is not set
@@ -2528,11 +2534,15 @@ NO_DIM:
 			break
 		}
 
-		// heating only serves surplus use, there is no purpose in charging without surplus data
-		if failure == MeterFailsafe && lp.chargerHasFeature(api.Heating) {
-			lp.log.DEBUG.Println("meter unavailable, pausing heating")
-			err = lp.setLimit(0)
-			break
+		if failure == MeterFailsafe {
+			if action := lp.meterFailsafeAction(); action == MeterFailsafeHold {
+				lp.log.DEBUG.Println("meter unavailable, holding charger state")
+				break
+			} else if action == MeterFailsafePause {
+				lp.log.DEBUG.Println("meter unavailable, pausing charger")
+				err = lp.setLimit(0)
+				break
+			}
 		}
 
 		targetCurrent := lp.pvMaxCurrent(sitePower, batteryPower, batteryBuffered, batteryStart)

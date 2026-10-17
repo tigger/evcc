@@ -17,12 +17,18 @@ func TestUpdateMeterFailureHeating(t *testing.T) {
 	tc := []struct {
 		name    string
 		failure MeterFailure
+		action  MeterFailsafeAction
 		expect  func(h *api.MockCharger)
 	}{
-		{"hold keeps state", MeterHold, func(h *api.MockCharger) {}},
-		{"failsafe pauses heating", MeterFailsafe, func(h *api.MockCharger) {
+		{"hold keeps state", MeterHold, MeterFailsafeAuto, func(h *api.MockCharger) {}},
+		{"failsafe pauses heating", MeterFailsafe, MeterFailsafeAuto, func(h *api.MockCharger) {
 			h.EXPECT().Enable(false)
 		}},
+		{"failsafe pause", MeterFailsafe, MeterFailsafePause, func(h *api.MockCharger) {
+			h.EXPECT().Enable(false)
+		}},
+		{"failsafe hold", MeterFailsafe, MeterFailsafeHold, func(h *api.MockCharger) {}},
+		{"failsafe charge", MeterFailsafe, MeterFailsafeCharge, func(h *api.MockCharger) {}},
 	}
 
 	for _, tc := range tc {
@@ -42,17 +48,18 @@ func TestUpdateMeterFailureHeating(t *testing.T) {
 					api.Charger
 					api.FeatureDescriber
 				}{cc, fd},
-				chargeMeter: newChargeMeter(&Null{}),
-				chargeRater: &Null{},
-				chargeTimer: &Null{},
-				wakeUpTimer: NewTimer(),
-				minCurrent:  minA,
-				maxCurrent:  maxA,
-				phases:      1,
-				solarShare:  1,
-				status:      api.StatusC,
-				enabled:     true,
-				mode:        api.ModeSmart,
+				chargeMeter:    newChargeMeter(&Null{}),
+				chargeRater:    &Null{},
+				chargeTimer:    &Null{},
+				wakeUpTimer:    NewTimer(),
+				minCurrent:     minA,
+				maxCurrent:     maxA,
+				phases:         1,
+				solarShare:     1,
+				status:         api.StatusC,
+				enabled:        true,
+				mode:           api.ModeSmart,
+				OnMeterFailure: tc.action,
 			}
 			cc.EXPECT().Enabled().AnyTimes().Return(true, nil)
 			cc.EXPECT().MaxCurrent(int64(minA)).Return(nil) // initial state read

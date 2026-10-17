@@ -238,6 +238,15 @@
           "priority": {
             "type": "integer"
           },
+          "onMeterFailure": {
+            "type": "string",
+            "enum": [
+              "charge",
+              "pause",
+              "hold"
+            ],
+            "description": "Behavior after the site meterFailsafe timeout. Default: pause for heating, charge with at least min current otherwise"
+          },
           "vehicle": {
             "type": "string"
           },
